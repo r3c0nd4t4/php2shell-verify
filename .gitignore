@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+lab/httpd.conf
+lab/apache.pid
+lab/error.log
+lab/www/
+lab/sess/
