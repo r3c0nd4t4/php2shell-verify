@@ -1,131 +1,117 @@
 # php2shell-verify
 
-Verification toolkit and source-level analysis for **CVE-2026-109618 / CVE-2026-109619** ("php2shell") — state corruption when an out-of-memory `longjmp` escapes PHP's pre-RINIT `session.upload_progress` callback.
+Verification toolkit and source-level analysis for **CVE-2026-109618 / CVE-2026-109619** — state corruption when an out-of-memory `longjmp` escapes PHP's pre-RINIT `session.upload_progress` callback.
 
-**What this is:** a probe that reproduces the trigger I could verify — an OOM aborting the request *before any application code runs* — plus the probe for the documented memory-disclosure primitive (stale `PS(id)` echoed in `Set-Cookie: PHPSESSID`).
+**What this is:** a probe that reproduces the trigger (an OOM that aborts the request before any application code runs), two local labs, and an analysis of the fix.
+**What this is not:** an exploit. No shell, no weaponised chain.
 
-**What this is not:** a working RCE exploit. No code execution, no heap-grooming chain, no weaponisation. The status table below is deliberate.
-
-| Item | Status |
+| | Status |
 |---|---|
-| pre-RINIT upload-progress callback reachable, OOM abort before script | **verified** (PHP 8.4.24, mod_php + php-cgi) |
-| worker survives the abort on mod_php; process exits 255 under CGI | **verified** |
-| `session.init` failure ignored after `PS(session_status) = active` | **verified in source**, patch removes it |
-| stale `PS(id)` → malformed/oversized `Set-Cookie` | **implemented, not reproduced** |
-| remote code execution | **not reproduced here** — publicly reproduced by others, see [`analysis/PUBLIC-REPRODUCTIONS.md`](analysis/PUBLIC-REPRODUCTIONS.md) |
-
-If you found this while looking for a "php2shell exploit": it won't give you a shell. It will tell you whether a target is in the affected code path.
-
-## The bug in one paragraph
-
-`session.upload_progress` processes a multipart body *before* RINIT. That callback (`php_session_rfc1867_callback`, `ext/session/session.c`) initialises the session and writes attacker-controlled data, relying on request globals that were not reset for this request yet. On memory exhaustion PHP aborts via `zend_bailout()`/`longjmp()` out of a half-initialised operation. Two things are left inconsistent:
-
-```c
-/* 8.4.24, ext/session/session.c */
-3187  php_session_initialize();
-3188  PS(session_status) = php_session_active;   /* forced even when init FAILED */
-...
- 445          zend_string_release_ex(PS(id), 0); /* freed, pointer left dangling */
- 446          PS(id) = PS(mod)->s_create_sid(...); /* a bailout here leaves it dangling */
-```
-
-The 8.4.27 fix (`ext/session/session.c` plus engine-wide OOM handling) does four things: `PS(id) = NULL` immediately after release, initialisation failures returned instead of forced to `active`, `in_rfc1867_update` gating user code during the pre-RINIT decode, and `php_rinit_session_globals()` at `MULTIPART_EVENT_START` — *"This runs before RINIT, so we need to clear these early"*. The engine side replaces OOM `longjmp` with a delayed OOM (`EG(delayed_oom)`, UnwindExit) and adds a hard memory limit.
+| Paths to the pre-RINIT callback, OOM abort | **verified** (PHP 8.4.24, mod_php + php-cgi) |
+| Worker survives on mod_php; CGI process exits 255 | **verified** |
+| Source defects removed by 8.4.27 | **verified** against `ext/session/session.c` |
+| Stale-session disclosure | probe implemented, **not reproduced here** |
+| Remote code execution | **not reproduced here** — reproduced publicly, see [`docs/REPRODUCTIONS.md`](docs/REPRODUCTIONS.md) |
 
 ## Quick start
 
-No third-party dependencies; the probe is stdlib-only Python 3.8+.
-
 ```bash
-# vulnerable target (Apache + mod_php 8.4.24, single worker, memory_limit 16M)
-./lab/setup_modphp.sh start               # port 18090 + writable log dir, no root required
-
-# fingerprint
-python3 poc/php2shell_probe.py --target http://127.0.0.1:18090 --mode recon
-
-# verified trigger: 4 MB progress value vs 16 M limit
-python3 poc/php2shell_probe.py --target http://127.0.0.1:18090 --mode oom
+./lab/verify/run.sh start
+python3 poc/verify.py --mode oom
+./lab/verify/run.sh stop
 ```
-
-Observed:
 
 ```
 [*] POST 4194558 bytes, progress key 4194304 bytes
-[*] HTTP 200 in 0.00s, body=0B, Set-Cookie=None
+[*] HTTP 500 in 0.00s, body=0B, Set-Cookie=None
 [+] request aborted before any application code ran (empty response, no session cookie) -> pre-RINIT callback path
 [*] worker still serving: True
 ```
 
-Server side, same request: `PHP Fatal error: Allowed memory size of 16777216 bytes exhausted (tried to allocate 4194336 bytes) in Unknown on line 0` — no script frame, i.e. request startup, not application code.
+Server side: `PHP Fatal error: Allowed memory size of 16777216 bytes exhausted (tried to allocate 4194336 bytes) in Unknown on line 0`. No script frame — the abort happens during request startup.
 
-## Modes
+## The bug in 30 seconds
 
-| Mode | Purpose |
+`session.upload_progress` initialises the session while the multipart body is parsed, **before RINIT**:
+
+```c
+/* ext/session/session.c, 8.4.24 */
+3187  php_session_initialize();
+3188  PS(session_status) = php_session_active;   /* forced even if init FAILED */
+ 445          zend_string_release_ex(PS(id), 0); /* freed, pointer left dangling */
+ 446          PS(id) = PS(mod)->s_create_sid(...);
+```
+
+If an allocation fails inside that path, `zend_bailout()` unwinds out of a half-initialised operation. The next request on the same worker can then use a pointer that was freed. Full detail, including what the fix changes: [`docs/MECHANISM.md`](docs/MECHANISM.md).
+
+## Choose a lab
+
+| Lab | Port | Demonstrates | Not |
+|---|---|---|---|
+| [`lab/verify/`](lab/verify) | 18090 | the CVE surface: abort, stale-session window | no execution |
+| [`lab/mismatch/`](lab/mismatch) | 18092 | command execution via a **different** bug | not the CVE |
+| [`lab/docker/`](lab/docker) | 8088 | reference target for the amd64 chains | not executed here |
+
+```bash
+./lab/mismatch/run.sh start
+python3 poc/mismatch.py -c id      # uid=<the Apache user>
+./lab/mismatch/run.sh stop
+```
+
+That `id` comes from two apps sharing `session.save_path` with different
+`session.serialize_handler` values plus an application gadget — a configuration
+bug that works on any PHP version. It is included as a control: it proves the
+harness detects execution, which is why `verify` returning nothing means something.
+
+## PoCs
+
+| Script | Purpose |
 |---|---|
-| `recon` | PHP version vs fixed versions, cookie behaviour |
-| `oom` | trigger the pre-RINIT abort; report body/cookie shape and worker survival |
-| `stale-sid` | request A drives the strict-mode release path into an OOM, request B probes the same worker and inspects `Set-Cookie` for a malformed/oversized SID |
-| `sweep` | lab only: vary filler to try to make the *small* SID allocation the one that fails |
+| [`poc/verify.py`](poc/verify.py) | safe probe: `recon`, `oom`, `stale-sid`, `sweep` |
+| [`poc/mismatch.py`](poc/mismatch.py) | lab-only command execution through the handler mismatch |
 
-Exit codes: `0` observed, `1` unusable target, `2` probe ran but no symptom.
+`verify.py` exits `0` on an observed symptom, `2` when the probe ran but saw
+nothing, `1` on an unusable target. It never attempts execution.
 
-Useful flags: `--key-bytes`, `--filler-fields`, `--filler-bytes`, `--sid` (strict-mode probe), `--path`.
+## Why the disclosure was not reproduced here
 
-## Why it does not fire everywhere (measured)
-
-The disclosure needs `PS(id)` to be freed and **not** reassigned, i.e. the ~32-byte `zend_string_alloc()` inside `s_create_sid()` must be the allocation that fails. Small-bin allocations only fail when a new 2 MB chunk cannot be allocated, so it is a chunk-grooming problem, not a request-shaping one. Measurements on 8.4.24, `memory_limit=16M`:
-
-| Attempt | Failures observed |
-|---|---|
-| sweep 19–24 MB at 64-byte steps | only huge allocations, `4194336` / `4194352` B |
-| 4 MB key, 0–15 MB of filler fields | `872 K – 1.94 M` B (parser / serializer), never ~32 B |
-| 40-step field sweeps | 0 malformed session ids |
-
-Red Hat's own statement matches: *"reliable exploitation requires precise heap manipulation and timing."* The probe exposes the knobs; the grooming chain is missing.
-
-## Does `id` run?
-
-Tested, with a positive control: `lab/exec-test/` runs the CVE surface and the
-handler-mismatch configuration side by side. `id` executes only in the latter —
-a configuration bug — which is the same distinction the section below explains.
-See `lab/exec-test/README.md`. `lab/exec-lab/` is the interactive version:
-a `cmd> ` shell whose commands run through that mismatch, not through the CVE.
-
-## Related, but a different bug
-
-`related/handler-mismatch/` demonstrates the `php_serialize` ↔ `php` `|` delimiter mismatch (object injection into `__destruct`). It is a **configuration bug**, not these CVEs. It is included because the most-shared "php2shell" PoC repository lists exactly that as "Chain 2", alongside generic LFI/log-poisoning chains that need a pre-existing file-inclusion bug. Those chains work on a lab that sets `upload_progress.cleanup=Off` and an LFI endpoint; they do not exercise this vulnerability.
+The public chains place the OOM at a specific allocation inside
+`php_session_send_cookie()`/`php_session_initialize()` and then shape the heap so
+the stale pointer is reclaimed with controlled bytes. This repository reached the
+abort but not the window; the experiments and their failure sizes are recorded in
+[`analysis/ATTEMPT-stale-id.md`](analysis/ATTEMPT-stale-id.md). That is a limit of
+this effort, not evidence against the vulnerability — see
+[`docs/REPRODUCTIONS.md`](docs/REPRODUCTIONS.md) for the chains that did it.
 
 ## Affected and fixed
 
-Affected: PHP 8.2.x < 8.2.35, 8.3.x < 8.3.36, 8.4.x < 8.4.27, 8.5.x < 8.5.12 (code dates to 5.4). Fixed in 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12, 2026-10-21; upstream commit `3584a98b` (2026-10-18), `analysis/patch-commit.txt`.
+Affected: PHP 8.2.x < 8.2.35, 8.3.x < 8.3.36, 8.4.x < 8.4.27, 8.5.x < 8.5.12.
+Fixed in 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12 (2026-10-21), upstream commit
+`3584a98b`. Patch; `memory_limit=-1` and disabling `upload_progress` are partial
+mitigations only.
 
-## Detection
+## Repository map
 
-- `200` with an empty body and **no** `Set-Cookie` on a multipart POST that carries `PHP_SESSION_UPLOAD_PROGRESS`
-- `Allowed memory size ... exhausted ... in Unknown on line 0` / `PHP Request Startup:` prefixed errors
-- worker churn / `MaxRequestWorkers` reached after upload requests
-- `Set-Cookie: PHPSESSID=` values outside `[0-9a-v]{26,256}` (the disclosure symptom)
+```
+poc/       verify.py (safe probe)   mismatch.py (lab command execution)
+lab/       verify/  mismatch/  docker/
+docs/      MECHANISM.md  REPRODUCTIONS.md
+analysis/  FINDINGS.md  ATTEMPT-stale-id.md  patch-session.diff  verified-run.txt
+REFERENCES.md
+SECURITY.md
+```
 
-## Mitigation
+## References
 
-Patch. Interim, per PHP: `memory_limit = -1` at a level applications cannot override (`php_admin_value`) — this only closes the engine OOM path and lets a request consume all server memory, so monitor RSS; disable `session.upload_progress` and filter multipart bodies at the edge as defence in depth. PHP's own advisory is explicit that configuration workarounds close only some paths.
-
-## Public reproductions
-
-Working end-to-end chains exist (`3em0/php2shell`, `dinosn/php-cve-2026-10961x-lab-poc`,
-`ikow/php2shell-poc` and others), all amd64 + Docker. What they do, the mechanism
-they use, and why this repository's "not reproduced" is a statement about our
-effort rather than the bug: [`analysis/PUBLIC-REPRODUCTIONS.md`](analysis/PUBLIC-REPRODUCTIONS.md).
-
-## Timeline and sources
-
-- 2026-10-18 upstream fix commit `3584a98b`; 2026-10-21 releases 8.2.35 / 8.3.36 / 8.4.27 / 8.5.12
-- Advisories: `GHSA-w8hw-w9fx-j79w`, `GHSA-6wmf-4rv5-p3rp`
-- Analysis: Red Hat, Unit 42, Wiz, Imperva, Sansec, watchTowr
+Advisories, writeups, the upstream commit and the working public reproductions:
+[`REFERENCES.md`](REFERENCES.md).
 
 ## Authorised use
 
-Run this only against systems you own or have written permission to test. It sends large multipart bodies and deliberately exhausts the request memory limit; it will terminate workers and can cause a denial of service on the target. See `SECURITY.md`.
+Run the labs and probes only against systems you own or are explicitly authorised
+to test. The CVE probe deliberately exhausts the request memory limit and can
+terminate workers. See [`SECURITY.md`](SECURITY.md).
 
 ## License
 
-MIT — see `LICENSE`.
+MIT — see [`LICENSE`](LICENSE).

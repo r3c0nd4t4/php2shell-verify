@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Deliberately vulnerable lab for the session handler MISMATCH.
-# NOT CVE-2026-109618 / CVE-2026-109619. See README.md.
+# Lab B - session handler MISMATCH (not CVE-2026-109618).
+#   * /app writes with php_serialize, /api reads with php, both share save_path
+#   * /api defines a Runner class whose __destruct executes a command
+# Demonstrates: object injection through the "|" delimiter, then command execution.
+# Requires an application that already has this misconfiguration + gadget.
 set -uo pipefail
-DIR=${DIR:-/tmp/exec-lab}
+DIR=${DIR:-/tmp/php2shell-verify-labs/mismatch}
 PORT=${PORT:-18092}
 
 case "${1:-start}" in
@@ -10,7 +13,6 @@ case "${1:-start}" in
     mkdir -p "$DIR"/{app,api,sess}; chmod -R 777 "$DIR"
     cat > "$DIR/app/index.php" <<'PHP'
 <?php
-// writer: php_serialize
 session_start();
 $_SESSION['note'] = $_POST['note'] ?? '';
 header('Content-Type: text/plain');
@@ -18,7 +20,6 @@ echo "writer ok\n";
 PHP
     cat > "$DIR/api/index.php" <<'PHP'
 <?php
-// reader: php handler + application gadget
 class Runner {
     public $cmd = 'id';
     public function __destruct() {
@@ -37,7 +38,7 @@ ErrorLog $DIR/error.log
 LogLevel warn
 User www-data
 Group www-data
-ServerName exec-lab.local
+ServerName mismatch.local
 LoadModule mpm_prefork_module /usr/lib/apache2/modules/mod_mpm_prefork.so
 LoadModule authz_core_module /usr/lib/apache2/modules/mod_authz_core.so
 LoadModule mime_module /usr/lib/apache2/modules/mod_mime.so
@@ -54,24 +55,25 @@ DocumentRoot $DIR
 <Directory $DIR/app>
     php_admin_value session.serialize_handler php_serialize
     php_admin_value session.save_path $DIR/sess
-    php_admin_value session.use_strict_mode 0
     php_admin_value display_errors 1
 </Directory>
 <Directory $DIR/api>
     php_admin_value session.serialize_handler php
     php_admin_value session.save_path $DIR/sess
-    php_admin_value session.use_strict_mode 0
     php_admin_value display_errors 1
 </Directory>
 EOF
     chmod 777 "$DIR"
     apache2 -f "$DIR/httpd.conf" -k stop >/dev/null 2>&1
+    apache2 -f "$DIR/httpd.conf" -t >/dev/null
     apache2 -f "$DIR/httpd.conf" -k start
     sleep 1
-    echo "[+] http://127.0.0.1:$PORT  (writer /app/index.php, reader /api/index.php)"
+    echo "[+] target  http://127.0.0.1:$PORT"
+    echo "[+] shell   python3 poc/mismatch.py --target http://127.0.0.1:$PORT -c id"
     ;;
   stop)
     [ -f "$DIR/httpd.conf" ] && apache2 -f "$DIR/httpd.conf" -k stop
     ;;
-  *) echo "usage: $0 start|stop"; exit 2 ;;
+  logs)  tail -n "${2:-20}" "$DIR/error.log" ;;
+  *) echo "usage: $0 start|stop|logs [n]" >&2; exit 2 ;;
 esac

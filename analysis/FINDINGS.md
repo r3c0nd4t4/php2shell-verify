@@ -83,4 +83,4 @@ Conclusion: a working disclosure needs deterministic chunk grooming at the `FILE
 
 `wakemeiflose/php2shell` lists "Chain 2" as the session-serializer `|` delimiter → object injection → `__destruct`. That is a `php_serialize` (write) vs `php` (read) handler mismatch — a configuration bug, demonstrable on any PHP version, requiring two handlers and a second application sharing `session.save_path`. Its other chains (LFI + session poisoning, log poisoning, `/proc/self/fd`, `phpinfo()` temp files, PEARCMD, wrappers) all require a pre-existing LFI. Its lab sets `upload_progress.cleanup=Off`, which no default target has.
 
-`related/handler-mismatch/` contains a working demonstration of that *different* primitive, with a control run showing that `Failed to decode session object` is emitted for an empty session file too — so that warning is not evidence of anything.
+`poc/mismatch.py` contains a working demonstration of that *different* primitive, with a control run showing that `Failed to decode session object` is emitted for an empty session file too — so that warning is not evidence of anything.

@@ -5,7 +5,7 @@
 > (`zend_string_safe_alloc(3, sid_length, 0, 0)`, ~121 B) after `send_cookie=1`,
 > and the next request's pre-RINIT `rfc1867_cleanup` re-enters `PS(id)`. For
 > execution the dangling object is `PS(http_session_vars)`, a `zend_reference`.
-> See `PUBLIC-REPRODUCTIONS.md`. The experiments below are kept because they show
+> See `docs/REPRODUCTIONS.md`. The experiments below are kept because they show
 > which shapes do *not* reach the window.
 
 Time-boxed attempt to turn the verified trigger into the documented memory

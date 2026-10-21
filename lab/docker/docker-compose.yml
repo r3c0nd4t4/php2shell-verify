@@ -1,0 +1,13 @@
+# Reference target for the public amd64 chains.
+# Configuration mirrors what those chains were measured against; this repo did
+# not execute it (aarch64 host, no Docker daemon). See README.md here.
+services:
+  web:
+    image: php:8.4.26-apache
+    platform: linux/amd64
+    ports:
+      - "127.0.0.1:8088:80"
+    volumes:
+      - ./php.ini:/usr/local/etc/php/conf.d/zz-php2shell.ini:ro
+      - ./apache-single-worker.conf:/etc/apache2/conf-enabled/zz-single-worker.conf:ro
+      - ./www:/var/www/html:ro
