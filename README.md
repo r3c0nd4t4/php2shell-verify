@@ -87,7 +87,8 @@ Red Hat's own statement matches: *"reliable exploitation requires precise heap m
 Tested, with a positive control: `lab/exec-test/` runs the CVE surface and the
 handler-mismatch configuration side by side. `id` executes only in the latter —
 a configuration bug — which is the same distinction the section below explains.
-See `lab/exec-test/README.md`.
+See `lab/exec-test/README.md`. `lab/exec-lab/` is the interactive version:
+a `cmd> ` shell whose commands run through that mismatch, not through the CVE.
 
 ## Related, but a different bug
 
