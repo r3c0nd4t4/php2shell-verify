@@ -12,7 +12,7 @@ Verification toolkit and source-level analysis for **CVE-2026-109618 / CVE-2026-
 | worker survives the abort on mod_php; process exits 255 under CGI | **verified** |
 | `session.init` failure ignored after `PS(session_status) = active` | **verified in source**, patch removes it |
 | stale `PS(id)` → malformed/oversized `Set-Cookie` | **implemented, not reproduced** |
-| remote code execution | **not attempted** |
+| remote code execution | **not reproduced here** — publicly reproduced by others, see [`analysis/PUBLIC-REPRODUCTIONS.md`](analysis/PUBLIC-REPRODUCTIONS.md) |
 
 If you found this while looking for a "php2shell exploit": it won't give you a shell. It will tell you whether a target is in the affected code path.
 
@@ -108,6 +108,13 @@ Affected: PHP 8.2.x < 8.2.35, 8.3.x < 8.3.36, 8.4.x < 8.4.27, 8.5.x < 8.5.12 (co
 ## Mitigation
 
 Patch. Interim, per PHP: `memory_limit = -1` at a level applications cannot override (`php_admin_value`) — this only closes the engine OOM path and lets a request consume all server memory, so monitor RSS; disable `session.upload_progress` and filter multipart bodies at the edge as defence in depth. PHP's own advisory is explicit that configuration workarounds close only some paths.
+
+## Public reproductions
+
+Working end-to-end chains exist (`3em0/php2shell`, `dinosn/php-cve-2026-10961x-lab-poc`,
+`ikow/php2shell-poc` and others), all amd64 + Docker. What they do, the mechanism
+they use, and why this repository's "not reproduced" is a statement about our
+effort rather than the bug: [`analysis/PUBLIC-REPRODUCTIONS.md`](analysis/PUBLIC-REPRODUCTIONS.md).
 
 ## Timeline and sources
 

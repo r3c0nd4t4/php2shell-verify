@@ -1,5 +1,13 @@
 # Attempt log: stale `PS(id)` → disclosure (not reproduced)
 
+> **Correction (2026-10-21):** the public chain does not fail `s_create_sid()`.
+> It OOMs inside `php_session_send_cookie()` → `php_url_encode()`
+> (`zend_string_safe_alloc(3, sid_length, 0, 0)`, ~121 B) after `send_cookie=1`,
+> and the next request's pre-RINIT `rfc1867_cleanup` re-enters `PS(id)`. For
+> execution the dangling object is `PS(http_session_vars)`, a `zend_reference`.
+> See `PUBLIC-REPRODUCTIONS.md`. The experiments below are kept because they show
+> which shapes do *not* reach the window.
+
 Time-boxed attempt to turn the verified trigger into the documented memory
 disclosure. **Result: not achieved.** Recorded so the next person does not
 repeat the same dead ends.
