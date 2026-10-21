@@ -82,6 +82,13 @@ The disclosure needs `PS(id)` to be freed and **not** reassigned, i.e. the ~32-b
 
 Red Hat's own statement matches: *"reliable exploitation requires precise heap manipulation and timing."* The probe exposes the knobs; the grooming chain is missing.
 
+## Does `id` run?
+
+Tested, with a positive control: `lab/exec-test/` runs the CVE surface and the
+handler-mismatch configuration side by side. `id` executes only in the latter —
+a configuration bug — which is the same distinction the section below explains.
+See `lab/exec-test/README.md`.
+
 ## Related, but a different bug
 
 `related/handler-mismatch/` demonstrates the `php_serialize` ↔ `php` `|` delimiter mismatch (object injection into `__destruct`). It is a **configuration bug**, not these CVEs. It is included because the most-shared "php2shell" PoC repository lists exactly that as "Chain 2", alongside generic LFI/log-poisoning chains that need a pre-existing file-inclusion bug. Those chains work on a lab that sets `upload_progress.cleanup=Off` and an LFI endpoint; they do not exercise this vulnerability.
