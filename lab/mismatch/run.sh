@@ -66,9 +66,13 @@ EOF
     chmod 777 "$DIR"
     apache2 -f "$DIR/httpd.conf" -k stop >/dev/null 2>&1
     apache2 -f "$DIR/httpd.conf" -t >/dev/null
-    apache2 -f "$DIR/httpd.conf" -k start >/dev/null 2>&1
-    rc=$?
-    if [ $rc -ne 0 ] || [ ! -s "$DIR/apache.pid" ]; then
+    rm -f "$DIR/apache.pid"
+    for _ in 1 2 3 4 5; do
+        apache2 -f "$DIR/httpd.conf" -k start >/dev/null 2>&1
+        [ -s "$DIR/apache.pid" ] && break
+        sleep 0.4
+    done
+    if [ ! -s "$DIR/apache.pid" ]; then
         echo "[-] failed to start on 127.0.0.1:$PORT (port already in use?)" >&2
         exit 1
     fi
@@ -78,6 +82,10 @@ EOF
     ;;
   stop)
     [ -f "$DIR/httpd.conf" ] && apache2 -f "$DIR/httpd.conf" -k stop >/dev/null 2>&1
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        (exec 3<>"/dev/tcp/127.0.0.1/$PORT") 2>/dev/null || break
+        sleep 0.3
+    done
     ;;
   logs)  tail -n "${2:-20}" "$DIR/error.log" ;;
   *) echo "usage: $0 start|stop|logs [n]" >&2; exit 2 ;;
